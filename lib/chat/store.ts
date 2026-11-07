@@ -1,12 +1,12 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
 import { priceCart } from "@/lib/cart";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { BusinessSettings, CartEntry, CartSummary, ChatStatus, CustomerDetails, DisplayMessage, Product } from "@/lib/types";
 
 export interface ChatSessionRow {
   id: string;
-  transcript: Anthropic.Beta.BetaMessageParam[];
+  /** Provider-specific model history (Claude messages or Gemini contents), append-only. */
+  transcript: unknown[];
   display: DisplayMessage[];
   cart: CartEntry[];
   customer: CustomerDetails;

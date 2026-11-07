@@ -1,5 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import { ApiError as GeminiApiError } from "@google/genai";
 import { NextResponse } from "next/server";
 import { ConflictError } from "@/lib/chat/store";
 import { LimitError, SESSION_COOKIE } from "@/lib/chat/service";
@@ -36,6 +37,16 @@ export function errorResponse(err: unknown) {
   }
   if (err instanceof Anthropic.APIError) {
     console.error("[chat] Anthropic API error", err.status, err.message);
+    return NextResponse.json({ error: "The assistant is temporarily unavailable. Please try again." }, { status: 502 });
+  }
+  if (err instanceof GeminiApiError) {
+    console.error("[chat] Gemini API error", err.status, err.message);
+    if (err.status === 429) {
+      return NextResponse.json({ error: "The assistant is busy right now. Please try again in a minute." }, { status: 429 });
+    }
+    if (err.status === 400 || err.status === 401 || err.status === 403 || err.status === 404) {
+      return NextResponse.json({ error: "The assistant is not configured correctly." }, { status: 500 });
+    }
     return NextResponse.json({ error: "The assistant is temporarily unavailable. Please try again." }, { status: 502 });
   }
   console.error("[chat] unexpected error", err);

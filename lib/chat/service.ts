@@ -1,6 +1,5 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
-import { runAgentTurn } from "@/lib/ai/agent";
+import { appendExchange, runAgentTurn } from "@/lib/ai/agent";
 import type { TurnState } from "@/lib/ai/tools";
 import { createSession, loadSession, saveSession, summarizeCart, type ChatSessionRow } from "@/lib/chat/store";
 import { serverEnv } from "@/lib/env";
@@ -103,11 +102,7 @@ export async function confirmFromButton(sessionId: string) {
     `Thank you${row.customer.name ? `, ${row.customer.name.split(" ")[0]}` : ""}! Your order ${placed.order_number} is confirmed. ` +
     `Invoice ${placed.invoice_number} for ${formatMoney(placed.total, placed.currency_code)} is ready to download below.`;
 
-  const transcript: Anthropic.Beta.BetaMessageParam[] = [
-    ...row.transcript,
-    { role: "user", content: "I confirm the order (pressed the Confirm button)." },
-    { role: "assistant", content: [{ type: "text", text }] },
-  ];
+  const transcript = appendExchange(row.transcript, "I confirm the order (pressed the Confirm button).", text);
 
   const saved = await saveSession(row, {
     transcript,
