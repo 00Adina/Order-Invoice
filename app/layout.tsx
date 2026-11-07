@@ -1,0 +1,25 @@
+import type { Metadata, Viewport } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import { Toaster } from "sonner";
+import "./globals.css";
+
+const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
+const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: { default: "Order Assistant", template: "%s · Order Assistant" },
+  description: "Chat to place an order and get an instant invoice.",
+};
+
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#4f46e5" };
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="en">
+      <body className={`${geistSans.variable} ${geistMono.variable} font-sans`}>
+        {children}
+        <Toaster richColors position="top-center" />
+      </body>
+    </html>
+  );
+}
