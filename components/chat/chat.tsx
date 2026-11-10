@@ -229,7 +229,7 @@ export function Chat({ businessName }: { businessName: string }) {
             <ShoppingCart className="size-4 text-primary" />
             Your order
             {state && state.cart.item_count > 0 && (
-              <span className="ml-auto rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground">{state.cart.item_count} items</span>
+              <span className="ml-auto rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground">{state.cart.item_count} {state.cart.item_count === 1 ? "item" : "items"}</span>
             )}
           </div>
           {state ? (

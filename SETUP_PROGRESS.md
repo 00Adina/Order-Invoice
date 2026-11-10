@@ -46,7 +46,8 @@ Your keys are saved in your own Notepad file. If you lose one:
 - [x] Vercel deploy working: https://order-invoice-omega.vercel.app (env var names fixed to ALL CAPS)
 - [x] Gemini "model not found" fixed (new default model + automatic fallback)
 - [x] Chat examples and assistant instructions tailored to auto parts & oils
-- [ ] Run `supabase/alif-autos-catalog.sql` in the Supabase SQL editor (sets name "Alif Autos", currency PKR, starter parts & oils catalog)
+- [x] Chat works end-to-end on Vercel with Gemini (auto-switches models when one is busy or slow)
+- [ ] Run `supabase/alif-autos-catalog.sql` (if not done yet) in the Supabase SQL editor (sets name "Alif Autos", currency PKR, starter parts & oils catalog)
 - [ ] Edit placeholder prices and stock in Admin -> Products; set tax rate and address in Admin -> Settings
 
 ### Next steps
