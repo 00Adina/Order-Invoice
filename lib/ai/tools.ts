@@ -103,7 +103,7 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
         email: { type: "string" },
         phone: { type: "string" },
         address: { type: "string", description: "Delivery / billing address" },
-        notes: { type: "string", description: "Order notes, e.g. sizes, colours, delivery instructions" },
+        notes: { type: "string", description: "Order notes, e.g. vehicle make/model/year, delivery or fitting instructions" },
       },
       required: ["name", "email", "phone", "address", "notes"],
       additionalProperties: false,

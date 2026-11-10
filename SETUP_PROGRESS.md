@@ -42,6 +42,13 @@ Your keys are saved in your own Notepad file. If you lose one:
 ### Testing on your own PC (before deploying)
 - [ ] Follow **TESTING_GUIDE.md**: Part A runs the app at http://localhost:3000, Part B tests every feature
 
+### Alif Autos setup
+- [x] Vercel deploy working: https://order-invoice-omega.vercel.app (env var names fixed to ALL CAPS)
+- [x] Gemini "model not found" fixed (new default model + automatic fallback)
+- [x] Chat examples and assistant instructions tailored to auto parts & oils
+- [ ] Run `supabase/alif-autos-catalog.sql` in the Supabase SQL editor (sets name "Alif Autos", currency PKR, starter parts & oils catalog)
+- [ ] Edit placeholder prices and stock in Admin -> Products; set tax rate and address in Admin -> Settings
+
 ### Next steps
 1. [ ] **Vercel: add environment variables** on the import screen (expand *Environment Variables*):
 

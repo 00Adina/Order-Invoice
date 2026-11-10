@@ -13,10 +13,10 @@ import type { ChatState, DisplayMessage } from "@/lib/types";
 
 const MAX_LEN = 2000;
 const SUGGESTIONS = [
-  "I want to order 2 white t-shirts and 1 pair of jeans",
+  "I need 4 litres of 5W-30 engine oil and an oil filter",
   "What do you sell?",
-  "Show me your shirts",
-  "Do you offer express delivery?",
+  "Show me brake pads for a Toyota Corolla",
+  "Which engine oils do you have?",
 ];
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -127,7 +127,7 @@ export function Chat({ businessName }: { businessName: string }) {
                   <Bubble role="assistant">
                     <p>
                       Hi! I&apos;m the {businessName} order assistant. Tell me what you&apos;d like, for example{" "}
-                      <em>&ldquo;2 white t-shirts and a pair of jeans&rdquo;</em>, and I&apos;ll put your order together and send you an invoice.
+                      <em>&ldquo;4 litres of 5W-30 engine oil and an oil filter&rdquo;</em>, and I&apos;ll put your order together and send you an invoice.
                     </p>
                   </Bubble>
                   {messages.length === 0 && (
