@@ -30,6 +30,17 @@ type Reply = { status?: number; json: unknown; delayMs?: number };
 type Step = (body: Body, url: string) => Reply;
 
 const requests: { url: string; headers: IncomingHttpHeaders; body: Body }[] = [];
+const modelListCalls: string[] = [];
+/** What GET /models returns: the models this (fake) key may use. */
+const MODEL_LIST = {
+  models: [
+    { name: "models/gemini-9-flash-tts", supportedGenerationMethods: ["generateContent"] },
+    { name: "models/gemini-9-flash-lite", supportedGenerationMethods: ["generateContent"] },
+    { name: "models/gemini-9-flash", supportedGenerationMethods: ["generateContent", "countTokens"] },
+    { name: "models/gemini-9-flash-preview-0101", supportedGenerationMethods: ["generateContent"] },
+    { name: "models/text-embedding-9", supportedGenerationMethods: ["embedContent"] },
+  ],
+};
 const script: Step[] = [];
 let server: Server;
 
@@ -55,6 +66,12 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
+        if (req.method === "GET" && /\/models(\?|$)/.test(req.url ?? "")) {
+          modelListCalls.push(req.url ?? "");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(MODEL_LIST));
+          return;
+        }
         const body = JSON.parse(raw || "{}") as Body;
         requests.push({ url: req.url ?? "", headers: req.headers, body });
         const step = script.shift();
@@ -220,20 +237,6 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
         return { status: 404, json: { error: { code: 404, message: "models/gemini-3.8-flash is not found for API version v1beta", status: "NOT_FOUND" } } };
       },
       (_b, url) => {
-        expect(url).toMatch(/\/models\?/);
-        return {
-          json: {
-            models: [
-              { name: "models/gemini-9-flash-tts", supportedGenerationMethods: ["generateContent"] },
-              { name: "models/gemini-9-flash-lite", supportedGenerationMethods: ["generateContent"] },
-              { name: "models/gemini-9-flash", supportedGenerationMethods: ["generateContent", "countTokens"] },
-              { name: "models/gemini-9-flash-preview-0101", supportedGenerationMethods: ["generateContent"] },
-              { name: "models/text-embedding-9", supportedGenerationMethods: ["embedContent"] },
-            ],
-          },
-        };
-      },
-      (_b, url) => {
         expect(url).toContain("models/gemini-9-flash:generateContent");
         return modelTurn([{ text: "We sell shirts, jeans and more." }]);
       },
@@ -246,8 +249,46 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
     const { sessionId: s, state } = await service.handleCustomerMessage(undefined, "What do you sell?");
     expect(state.messages.at(-1)!.text).toContain("We sell");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('using "gemini-9-flash"'));
+    expect(modelListCalls).toHaveLength(1);
     const next = await service.handleCustomerMessage(s, "ok");
     expect(next.state.messages.at(-1)!.text).toBe("Anything else?");
+    warn.mockRestore();
+  });
+
+  it("switches to another model at once when Google says the model is busy (503), and stays on it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    script.push(
+      (_b, url) => {
+        expect(url).toContain("models/gemini-9-flash:generateContent");
+        return { status: 503, json: { error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } } };
+      },
+      (_b, url) => {
+        expect(url).toContain("models/gemini-9-flash-lite:generateContent");
+        return modelTurn([{ text: "Here are our engine oils." }]);
+      },
+      (_b, url) => {
+        expect(url).toContain("models/gemini-9-flash-lite:generateContent");
+        return modelTurn([{ text: "Still here." }]);
+      },
+    );
+    const { sessionId: s, state } = await service.handleCustomerMessage(undefined, "Which engine oils do you have?");
+    expect(state.messages.at(-1)!.text).toBe("Here are our engine oils.");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned 503"));
+    const next = await service.handleCustomerMessage(s, "ok");
+    expect(next.state.messages.at(-1)!.text).toBe("Still here.");
+    expect(modelListCalls).toHaveLength(1); // model list is cached
+    warn.mockRestore();
+  });
+
+  it("if the backup is busy too, the customer gets a friendly 'busy' message", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const busy = () => ({ status: 503, json: { error: { code: 503, message: "high demand", status: "UNAVAILABLE" } } });
+    script.push(busy, busy);
+    const { errorResponse } = await import("@/lib/chat/http");
+    const err = await service.handleCustomerMessage(undefined, "hello").catch((e) => e);
+    const res = errorResponse(err);
+    expect(res.status).toBe(429);
+    expect((await res.json()).error).toMatch(/busy/);
     warn.mockRestore();
   });
 

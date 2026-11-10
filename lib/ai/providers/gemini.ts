@@ -63,18 +63,44 @@ export function thinkingConfigFor(model: string, level: "minimal" | "low" | "med
 
 const isTimeout = (err: unknown) => err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
 
+/** Model that replaces GEMINI_MODEL for good when Google says that id doesn't exist (404). */
 let resolvedModel: string | null = null;
+/** Models Google reported as overloaded / failing, and until when to avoid them. */
+const coolingDown = new Map<string, number>();
+const COOLDOWN_MS = 5 * 60_000;
+/** Google's transient server errors: overloaded (503), internal (500), deadline expired (504). */
+const TRANSIENT = new Set([500, 503, 504]);
 
-/** Ask Google which models this API key can use and pick the best chat-capable Flash model. */
-async function pickAvailableModel(): Promise<string | null> {
-  let best: { id: string; score: number } | null = null;
+const isCooling = (model: string) => (coolingDown.get(model) ?? 0) > Date.now();
+
+let modelListCache: { at: number; models: { id: string; score: number }[] } | null = null;
+
+/** Chat-capable Flash models this API key can use, best first (cached for 10 minutes). */
+async function availableModels(): Promise<{ id: string; score: number }[]> {
+  if (modelListCache && Date.now() - modelListCache.at < 10 * 60_000) return modelListCache.models;
+  const models: { id: string; score: number }[] = [];
   const pager = await gemini().models.list({ config: { pageSize: 100 } });
   for await (const m of pager) {
     if (!m.name) continue;
     const score = rankChatModel(m.name, m.supportedActions);
-    if (score !== null && (!best || score > best.score)) best = { id: m.name.replace(/^models\//, ""), score };
+    if (score !== null) models.push({ id: m.name.replace(/^models\//, ""), score });
   }
-  return best?.id ?? null;
+  models.sort((a, b) => b.score - a.score);
+  modelListCache = { at: Date.now(), models };
+  return models;
+}
+
+/** Best available model other than `exclude` and anything cooling down. */
+async function pickAvailableModel(exclude: string): Promise<string | null> {
+  const models = await availableModels().catch(() => []);
+  return models.find((m) => m.id !== exclude && !isCooling(m.id))?.id ?? null;
+}
+
+/** The model to use now: the configured one, unless it is cooling down after an overload. */
+async function currentModel(configured: string): Promise<string> {
+  const primary = resolvedModel ?? configured;
+  if (!isCooling(primary)) return primary;
+  return (await pickAvailableModel(primary)) ?? primary;
 }
 
 const BLOCKED = new Set<string>([FinishReason.SAFETY, FinishReason.PROHIBITED_CONTENT, FinishReason.BLOCKLIST, FinishReason.SPII]);
@@ -106,19 +132,26 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
   };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const model = resolvedModel ?? env.GEMINI_MODEL;
+    let model = await currentModel(env.GEMINI_MODEL);
     const started = Date.now();
     let response;
     try {
       try {
         response = await generate(model);
       } catch (err) {
-        // Model ids change over time. If ours is unknown to this key, find one that exists and retry once.
-        if (!(err instanceof ApiError) || err.status !== 404) throw err;
-        const fallback = await pickAvailableModel().catch(() => null);
-        if (!fallback || fallback === model) throw err;
-        console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
-        resolvedModel = fallback;
+        if (!(err instanceof ApiError) || !(err.status === 404 || TRANSIENT.has(err.status))) throw err;
+        const fallback = await pickAvailableModel(model);
+        if (!fallback) throw err;
+        if (err.status === 404) {
+          // Model ids change over time: this one doesn't exist for the key, so stop using it.
+          console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
+          resolvedModel = fallback;
+        } else {
+          // Busy or failing right now: switch at once and give it a few minutes before trying again.
+          console.warn(`[gemini] model "${model}" returned ${err.status} (busy or failing); using "${fallback}" for the next ${COOLDOWN_MS / 60_000} minutes.`);
+          coolingDown.set(model, Date.now() + COOLDOWN_MS);
+        }
+        model = fallback;
         response = await generate(fallback);
       }
     } catch (err) {
@@ -146,7 +179,7 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
 
     const calls = candidate.content.parts.flatMap((p) => (p.functionCall ? [p.functionCall] : []));
     console.log(
-      `[gemini] ${resolvedModel ?? env.GEMINI_MODEL} round ${round + 1}: ${Date.now() - started} ms, ` +
+      `[gemini] ${model} round ${round + 1}: ${Date.now() - started} ms, ` +
         `finish=${candidate.finishReason ?? "?"}, tools=[${calls.map((c) => c.name).join(", ")}]`,
     );
     if (calls.length === 0) break;

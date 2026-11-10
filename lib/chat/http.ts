@@ -41,7 +41,7 @@ export function errorResponse(err: unknown) {
   }
   if (err instanceof GeminiApiError) {
     console.error("[chat] Gemini API error", err.status, err.message);
-    if (err.status === 429) {
+    if (err.status === 429 || err.status === 503) {
       return NextResponse.json({ error: "The assistant is busy right now. Please try again in a minute." }, { status: 429 });
     }
     if (err.status === 400 || err.status === 401 || err.status === 403 || err.status === 404) {
