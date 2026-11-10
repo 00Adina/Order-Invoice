@@ -1,8 +1,11 @@
 import "server-only";
-import { ApiError, FinishReason, GoogleGenAI, type Content, type FunctionDeclaration, type Part } from "@google/genai";
+import { ApiError, FinishReason, GoogleGenAI, ThinkingLevel, type Content, type FunctionDeclaration, type Part, type ThinkingConfig } from "@google/genai";
 import { serverEnv } from "@/lib/env";
 import { TOOLS, executeTool, type TurnState } from "@/lib/ai/tools";
-import { MAX_TOOL_ROUNDS, REFUSAL_REPLY, RETRY_REPLY, type TurnResult } from "@/lib/ai/types";
+import { MAX_TOOL_ROUNDS, REFUSAL_REPLY, RETRY_REPLY, SLOW_REPLY, type TurnResult } from "@/lib/ai/types";
+
+/** Whole customer turn must finish inside the route's 60 s limit, leaving time to save. */
+const turnBudgetMs = () => Number(process.env.CHAT_TURN_BUDGET_MS) || 48_000;
 
 let client: GoogleGenAI | null = null;
 function gemini() {
@@ -11,7 +14,7 @@ function gemini() {
     if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not set");
     client = new GoogleGenAI({
       apiKey: env.GEMINI_API_KEY,
-      httpOptions: { timeout: 60_000, ...(env.GEMINI_BASE_URL ? { baseUrl: env.GEMINI_BASE_URL } : {}) },
+      httpOptions: env.GEMINI_BASE_URL ? { baseUrl: env.GEMINI_BASE_URL } : undefined,
     });
   }
   return client;
@@ -41,6 +44,25 @@ export function rankChatModel(name: string, actions: string[] | undefined): numb
   return score;
 }
 
+/**
+ * Keep "thinking" short for a snappy chat. Gemini 3+ takes a thinking level;
+ * 2.5 models take a token budget; older models don't support the setting.
+ */
+export function thinkingConfigFor(model: string, level: "minimal" | "low" | "medium" | "high"): ThinkingConfig | undefined {
+  const version = Number(model.replace(/^models\//, "").match(/^gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0);
+  if (version >= 3) {
+    const map = { minimal: ThinkingLevel.MINIMAL, low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH };
+    return { thinkingLevel: map[level] };
+  }
+  if (version >= 2.5) {
+    const budgets = { minimal: 0, low: 512, medium: 2048, high: 8192 };
+    return { thinkingBudget: model.includes("pro") ? Math.max(128, budgets[level]) : budgets[level] };
+  }
+  return undefined;
+}
+
+const isTimeout = (err: unknown) => err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
+
 let resolvedModel: string | null = null;
 
 /** Ask Google which models this API key can use and pick the best chat-capable Flash model. */
@@ -66,29 +88,44 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
   const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
   let reply = "";
 
-  const generate = (model: string) =>
-    gemini().models.generateContent({
+  const deadline = Date.now() + turnBudgetMs();
+
+  const generate = (model: string) => {
+    const remaining = deadline - Date.now();
+    if (remaining < 3_000) throw Object.assign(new Error("turn budget exhausted"), { name: "TimeoutError" });
+    return gemini().models.generateContent({
       model,
       contents,
       config: {
         systemInstruction: system,
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+        thinkingConfig: thinkingConfigFor(model, env.GEMINI_THINKING),
+        abortSignal: AbortSignal.timeout(remaining),
       },
     });
+  };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const model = resolvedModel ?? env.GEMINI_MODEL;
+    const started = Date.now();
     let response;
     try {
-      response = await generate(model);
+      try {
+        response = await generate(model);
+      } catch (err) {
+        // Model ids change over time. If ours is unknown to this key, find one that exists and retry once.
+        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+        const fallback = await pickAvailableModel().catch(() => null);
+        if (!fallback || fallback === model) throw err;
+        console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
+        resolvedModel = fallback;
+        response = await generate(fallback);
+      }
     } catch (err) {
-      // Model ids change over time. If ours is unknown to this key, find one that exists and retry once.
-      if (!(err instanceof ApiError) || err.status !== 404) throw err;
-      const fallback = await pickAvailableModel().catch(() => null);
-      if (!fallback || fallback === model) throw err;
-      console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
-      resolvedModel = fallback;
-      response = await generate(fallback);
+      if (!isTimeout(err)) throw err;
+      console.warn(`[gemini] turn ran out of time in round ${round + 1} (${Date.now() - started} ms for the last call)`);
+      // Roll the turn back so the customer can simply resend; nothing half-done is saved.
+      return { transcript: null, reply: SLOW_REPLY };
     }
 
     const candidate = response.candidates?.[0];
@@ -108,6 +145,10 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
     if (text) reply = text;
 
     const calls = candidate.content.parts.flatMap((p) => (p.functionCall ? [p.functionCall] : []));
+    console.log(
+      `[gemini] ${resolvedModel ?? env.GEMINI_MODEL} round ${round + 1}: ${Date.now() - started} ms, ` +
+        `finish=${candidate.finishReason ?? "?"}, tools=[${calls.map((c) => c.name).join(", ")}]`,
+    );
     if (calls.length === 0) break;
 
     if (candidate.finishReason === FinishReason.MAX_TOKENS) {

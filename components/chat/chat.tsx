@@ -22,7 +22,11 @@ const SUGGESTIONS = [
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? "Request failed");
+  if (!res.ok) {
+    if (body.error) throw new Error(body.error);
+    if (res.status === 504) throw new Error("The assistant took too long to reply. Please send your message again.");
+    throw new Error(`Something went wrong (error ${res.status}). Please try again.`);
+  }
   return body as T;
 }
 

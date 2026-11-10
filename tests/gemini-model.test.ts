@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rankChatModel } from "@/lib/ai/providers/gemini";
+import { rankChatModel, thinkingConfigFor } from "@/lib/ai/providers/gemini";
 
 describe("rankChatModel", () => {
   const pick = (names: string[]) =>
@@ -21,5 +21,15 @@ describe("rankChatModel", () => {
     expect(rankChatModel("models/gemini-3.8-pro", ["generateContent"])).toBeNull();
     expect(rankChatModel("models/gemini-3.8-flash", ["embedContent"])).toBeNull();
     expect(rankChatModel("models/text-embedding-004", ["embedContent"])).toBeNull();
+  });
+});
+
+describe("thinkingConfigFor", () => {
+  it("uses thinking levels on Gemini 3+, budgets on 2.5, nothing on older models", () => {
+    expect(thinkingConfigFor("gemini-3.8-flash", "low")).toEqual({ thinkingLevel: "LOW" });
+    expect(thinkingConfigFor("models/gemini-4-flash", "minimal")).toEqual({ thinkingLevel: "MINIMAL" });
+    expect(thinkingConfigFor("gemini-2.5-flash", "low")).toEqual({ thinkingBudget: 512 });
+    expect(thinkingConfigFor("gemini-2.5-pro", "minimal")).toEqual({ thinkingBudget: 128 });
+    expect(thinkingConfigFor("gemini-2.0-flash", "low")).toBeUndefined();
   });
 });

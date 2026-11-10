@@ -23,9 +23,10 @@ type Content = { role: string; parts: Part[] };
 type Body = {
   contents: Content[];
   systemInstruction?: unknown;
+  generationConfig?: { thinkingConfig?: { thinkingLevel?: string; thinkingBudget?: number } };
   tools?: { functionDeclarations?: { name: string; parametersJsonSchema?: unknown }[] }[];
 };
-type Reply = { status?: number; json: unknown };
+type Reply = { status?: number; json: unknown; delayMs?: number };
 type Step = (body: Body, url: string) => Reply;
 
 const requests: { url: string; headers: IncomingHttpHeaders; body: Body }[] = [];
@@ -63,8 +64,13 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
         } catch (err) {
           out = { status: 400, json: { error: { code: 400, message: `[mock] ${(err as Error).message}`, status: "INVALID_ARGUMENT" } } };
         }
-        res.writeHead(out.status ?? 200, { "content-type": "application/json" });
-        res.end(JSON.stringify(out.json));
+        const send = () => {
+          if (res.writableEnded || res.destroyed) return;
+          res.writeHead(out.status ?? 200, { "content-type": "application/json" });
+          res.end(JSON.stringify(out.json));
+        };
+        if (out.delayMs) setTimeout(send, out.delayMs);
+        else send();
       });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -130,6 +136,7 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
     expect(first.url).toContain("gemini-3.8-flash");
     expect(first.headers["x-goog-api-key"]).toBe("test-gemini-key-000");
     expect(first.body.systemInstruction).toBeTruthy();
+    expect(first.body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: "LOW" });
     const names = first.body.tools![0].functionDeclarations!.map((d) => d.name);
     expect(names).toEqual([
       "search_products",
@@ -242,5 +249,25 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
     const next = await service.handleCustomerMessage(s, "ok");
     expect(next.state.messages.at(-1)!.text).toBe("Anything else?");
     warn.mockRestore();
+  });
+
+  it("a reply that takes too long ends with a friendly retry message and nothing is saved", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CHAT_TURN_BUDGET_MS = "4000";
+    try {
+      script.push(
+        () => modelTurn([call("search_products", { query: "engine oil" })]),
+        () => ({ ...modelTurn([{ text: "too late" }]), delayMs: 6000 }),
+      );
+      const started = Date.now();
+      const { sessionId: s, state } = await service.handleCustomerMessage(undefined, "engine oil please");
+      expect(Date.now() - started).toBeLessThan(5500);
+      expect(state.messages.at(-1)!.text).toMatch(/took me too long/);
+      const { rows } = await pool!.query("select transcript from chat_sessions where id = $1", [s]);
+      expect(rows[0].transcript).toEqual([]);
+    } finally {
+      delete process.env.CHAT_TURN_BUDGET_MS;
+      warn.mockRestore();
+    }
   });
 });

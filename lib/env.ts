@@ -19,6 +19,8 @@ const ServerEnv = z.object({
   GEMINI_API_KEY: optional(z.string().min(10)),
   // If this id isn't available for the key, the app picks the best available Flash model automatically.
   GEMINI_MODEL: z.string().default("gemini-3.8-flash"),
+  // How long Gemini "thinks" before replying. "low" keeps chat replies fast.
+  GEMINI_THINKING: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["minimal", "low", "medium", "high"]).default("low")),
   GEMINI_BASE_URL: optional(z.url()),
 
   CHAT_MAX_MESSAGES_PER_SESSION: z.coerce.number().int().positive().default(60),
