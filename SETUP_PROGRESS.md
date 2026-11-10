@@ -5,7 +5,7 @@ A running checklist for getting this app live. When you come back to Claude, say
 
 > Never put real keys in this file. It lives in the GitHub repo.
 
-_Last updated: 8 Nov 2026_
+_Last updated: 10 Nov 2026_
 
 ## Where things are
 
@@ -38,6 +38,9 @@ Your keys are saved in your own Notepad file. If you lose one:
 - [ ] Demo products loaded? In Supabase, open **Table Editor → products**. You should see 13 items.
       If it's empty, run `supabase/seed.sql` in the SQL editor: paste the file **contents**, not the file name.
 - [ ] Gemini API key created at https://aistudio.google.com/apikey
+
+### Testing on your own PC (before deploying)
+- [ ] Follow **TESTING_GUIDE.md**: Part A runs the app at http://localhost:3000, Part B tests every feature
 
 ### Next steps
 1. [ ] **Vercel: add environment variables** on the import screen (expand *Environment Variables*):
