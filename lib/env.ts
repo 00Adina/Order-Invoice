@@ -17,8 +17,8 @@ const ServerEnv = z.object({
   ANTHROPIC_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
 
   GEMINI_API_KEY: optional(z.string().min(10)),
-  // Alias that always points at Google's current Flash model (free tier on AI Studio keys).
-  GEMINI_MODEL: z.string().default("gemini-flash-latest"),
+  // If this id isn't available for the key, the app picks the best available Flash model automatically.
+  GEMINI_MODEL: z.string().default("gemini-3.8-flash"),
   GEMINI_BASE_URL: optional(z.url()),
 
   CHAT_MAX_MESSAGES_PER_SESSION: z.coerce.number().int().positive().default(60),

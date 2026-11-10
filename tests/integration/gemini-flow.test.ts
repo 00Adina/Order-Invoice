@@ -26,7 +26,7 @@ type Body = {
   tools?: { functionDeclarations?: { name: string; parametersJsonSchema?: unknown }[] }[];
 };
 type Reply = { status?: number; json: unknown };
-type Step = (body: Body) => Reply;
+type Step = (body: Body, url: string) => Reply;
 
 const requests: { url: string; headers: IncomingHttpHeaders; body: Body }[] = [];
 const script: Step[] = [];
@@ -59,7 +59,7 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
         const step = script.shift();
         let out: Reply;
         try {
-          out = step ? step(body) : { status: 500, json: { error: { code: 500, message: "script exhausted", status: "INTERNAL" } } };
+          out = step ? step(body, req.url ?? "") : { status: 500, json: { error: { code: 500, message: "script exhausted", status: "INTERNAL" } } };
         } catch (err) {
           out = { status: 400, json: { error: { code: 400, message: `[mock] ${(err as Error).message}`, status: "INVALID_ARGUMENT" } } };
         }
@@ -127,7 +127,7 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
     // Request shape
     const first = requests[0];
     expect(first.url).toContain(":generateContent");
-    expect(first.url).toContain("gemini-flash-latest");
+    expect(first.url).toContain("gemini-3.8-flash");
     expect(first.headers["x-goog-api-key"]).toBe("test-gemini-key-000");
     expect(first.body.systemInstruction).toBeTruthy();
     const names = first.body.tools![0].functionDeclarations!.map((d) => d.name);
@@ -203,5 +203,44 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
     const res = errorResponse(err);
     expect(res.status).toBe(429);
     expect((await res.json()).error).toMatch(/busy/);
+  });
+
+  it("falls back to an available Flash model when the configured one returns 404", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    script.push(
+      (_b, url) => {
+        expect(url).toContain("gemini-3.8-flash:generateContent");
+        return { status: 404, json: { error: { code: 404, message: "models/gemini-3.8-flash is not found for API version v1beta", status: "NOT_FOUND" } } };
+      },
+      (_b, url) => {
+        expect(url).toMatch(/\/models\?/);
+        return {
+          json: {
+            models: [
+              { name: "models/gemini-9-flash-tts", supportedGenerationMethods: ["generateContent"] },
+              { name: "models/gemini-9-flash-lite", supportedGenerationMethods: ["generateContent"] },
+              { name: "models/gemini-9-flash", supportedGenerationMethods: ["generateContent", "countTokens"] },
+              { name: "models/gemini-9-flash-preview-0101", supportedGenerationMethods: ["generateContent"] },
+              { name: "models/text-embedding-9", supportedGenerationMethods: ["embedContent"] },
+            ],
+          },
+        };
+      },
+      (_b, url) => {
+        expect(url).toContain("models/gemini-9-flash:generateContent");
+        return modelTurn([{ text: "We sell shirts, jeans and more." }]);
+      },
+      // The chosen model is remembered for later turns
+      (_b, url) => {
+        expect(url).toContain("models/gemini-9-flash:generateContent");
+        return modelTurn([{ text: "Anything else?" }]);
+      },
+    );
+    const { sessionId: s, state } = await service.handleCustomerMessage(undefined, "What do you sell?");
+    expect(state.messages.at(-1)!.text).toContain("We sell");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('using "gemini-9-flash"'));
+    const next = await service.handleCustomerMessage(s, "ok");
+    expect(next.state.messages.at(-1)!.text).toBe("Anything else?");
+    warn.mockRestore();
   });
 });

@@ -1,5 +1,5 @@
 import "server-only";
-import { FinishReason, GoogleGenAI, type Content, type FunctionDeclaration, type Part } from "@google/genai";
+import { ApiError, FinishReason, GoogleGenAI, type Content, type FunctionDeclaration, type Part } from "@google/genai";
 import { serverEnv } from "@/lib/env";
 import { TOOLS, executeTool, type TurnState } from "@/lib/ai/tools";
 import { MAX_TOOL_ROUNDS, REFUSAL_REPLY, RETRY_REPLY, type TurnResult } from "@/lib/ai/types";
@@ -24,6 +24,37 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = TOOLS.map((t) => ({
   parametersJsonSchema: t.input_schema,
 }));
 
+/**
+ * Rank a model id for chat use: newest stable "flash" first, then previews and "lite".
+ * Returns null for models that can't serve this app (speech, images, embeddings, live audio…).
+ */
+export function rankChatModel(name: string, actions: string[] | undefined): number | null {
+  const id = name.replace(/^models\//, "");
+  if (!id.startsWith("gemini-") || !id.includes("flash")) return null;
+  if (actions && !actions.includes("generateContent")) return null;
+  if (/(tts|image|live|audio|embed|robotics|nano|omni|vision|computer)/.test(id)) return null;
+  const version = Number(id.match(/^gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0);
+  let score = version * 100;
+  if (/(preview|exp)/.test(id)) score -= 20;
+  if (id.includes("lite")) score -= 10;
+  if (/-\d{3,}$/.test(id)) score -= 1; // dated snapshots after the plain alias
+  return score;
+}
+
+let resolvedModel: string | null = null;
+
+/** Ask Google which models this API key can use and pick the best chat-capable Flash model. */
+async function pickAvailableModel(): Promise<string | null> {
+  let best: { id: string; score: number } | null = null;
+  const pager = await gemini().models.list({ config: { pageSize: 100 } });
+  for await (const m of pager) {
+    if (!m.name) continue;
+    const score = rankChatModel(m.name, m.supportedActions);
+    if (score !== null && (!best || score > best.score)) best = { id: m.name.replace(/^models\//, ""), score };
+  }
+  return best?.id ?? null;
+}
+
 const BLOCKED = new Set<string>([FinishReason.SAFETY, FinishReason.PROHIBITED_CONTENT, FinishReason.BLOCKLIST, FinishReason.SPII]);
 
 /**
@@ -35,15 +66,30 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
   const contents: Content[] = [...history, { role: "user", parts: [{ text: userText }] }];
   let reply = "";
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await gemini().models.generateContent({
-      model: env.GEMINI_MODEL,
+  const generate = (model: string) =>
+    gemini().models.generateContent({
+      model,
       contents,
       config: {
         systemInstruction: system,
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
       },
     });
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const model = resolvedModel ?? env.GEMINI_MODEL;
+    let response;
+    try {
+      response = await generate(model);
+    } catch (err) {
+      // Model ids change over time. If ours is unknown to this key, find one that exists and retry once.
+      if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      const fallback = await pickAvailableModel().catch(() => null);
+      if (!fallback || fallback === model) throw err;
+      console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
+      resolvedModel = fallback;
+      response = await generate(fallback);
+    }
 
     const candidate = response.candidates?.[0];
     if (response.promptFeedback?.blockReason || (candidate?.finishReason && BLOCKED.has(candidate.finishReason))) {

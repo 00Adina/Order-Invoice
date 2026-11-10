@@ -117,7 +117,7 @@ The chat is at http://localhost:3000 and the admin dashboard at http://localhost
 | Variable | Default | Notes |
 |---|---|---|
 | `AI_PROVIDER` | auto | `gemini` or `anthropic`. Auto picks Gemini when only `GEMINI_API_KEY` is set |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Alias for Google's current Flash model |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | If Google doesn't offer this model to your key, the app picks the newest available Flash model automatically and logs which one |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Any current Claude model id |
 | `ANTHROPIC_EFFORT` | `low` | `low` keeps chat replies fast. Raise it to `medium` if the assistant mishandles complex orders |
 | `CHAT_MAX_MESSAGES_PER_SESSION` | `60` | Abuse guard per chat |
