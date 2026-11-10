@@ -311,4 +311,31 @@ describe.skipIf(!DB_URL)("chat → order → invoice on Gemini (integration)", (
       warn.mockRestore();
     }
   });
+
+  it("a model that hangs is abandoned after the per-call limit and another model answers", async () => {
+    const { resetGeminiStateForTests } = await import("@/lib/ai/providers/gemini");
+    resetGeminiStateForTests();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.GEMINI_CALL_TIMEOUT_MS = "1500";
+    try {
+      script.push(
+        (_b, url) => {
+          expect(url).toContain("models/gemini-3.8-flash:generateContent");
+          return { ...modelTurn([{ text: "too late" }]), delayMs: 5000 };
+        },
+        (_b, url) => {
+          expect(url).toContain("models/gemini-9-flash:generateContent");
+          return modelTurn([{ text: "We have 5W-30 in 1 L and 4 L cans." }]);
+        },
+      );
+      const started = Date.now();
+      const { state } = await service.handleCustomerMessage(undefined, "5w-30 oil");
+      expect(state.messages.at(-1)!.text).toBe("We have 5W-30 in 1 L and 4 L cans.");
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("took longer than 1.5 s"));
+    } finally {
+      delete process.env.GEMINI_CALL_TIMEOUT_MS;
+      warn.mockRestore();
+    }
+  });
 });

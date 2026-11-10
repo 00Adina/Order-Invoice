@@ -6,6 +6,8 @@ import { MAX_TOOL_ROUNDS, REFUSAL_REPLY, RETRY_REPLY, SLOW_REPLY, type TurnResul
 
 /** Whole customer turn must finish inside the route's 60 s limit, leaving time to save. */
 const turnBudgetMs = () => Number(process.env.CHAT_TURN_BUDGET_MS) || 48_000;
+/** A single model call that takes longer than this is treated like "busy": switch models instead of waiting. */
+const callTimeoutMs = () => Number(process.env.GEMINI_CALL_TIMEOUT_MS) || 15_000;
 
 let client: GoogleGenAI | null = null;
 function gemini() {
@@ -73,6 +75,13 @@ const TRANSIENT = new Set([500, 503, 504]);
 
 const isCooling = (model: string) => (coolingDown.get(model) ?? 0) > Date.now();
 
+/** Test helper: forget model choices between test cases. */
+export function resetGeminiStateForTests() {
+  resolvedModel = null;
+  coolingDown.clear();
+  modelListCache = null;
+}
+
 let modelListCache: { at: number; models: { id: string; score: number }[] } | null = null;
 
 /** Chat-capable Flash models this API key can use, best first (cached for 10 minutes). */
@@ -119,6 +128,7 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
   const generate = (model: string) => {
     const remaining = deadline - Date.now();
     if (remaining < 3_000) throw Object.assign(new Error("turn budget exhausted"), { name: "TimeoutError" });
+    const timeout = Math.min(remaining, callTimeoutMs());
     return gemini().models.generateContent({
       model,
       contents,
@@ -126,7 +136,7 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
         systemInstruction: system,
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
         thinkingConfig: thinkingConfigFor(model, env.GEMINI_THINKING),
-        abortSignal: AbortSignal.timeout(remaining),
+        abortSignal: AbortSignal.timeout(timeout),
       },
     });
   };
@@ -139,16 +149,20 @@ export async function runGeminiTurn(history: Content[], userText: string, state:
       try {
         response = await generate(model);
       } catch (err) {
-        if (!(err instanceof ApiError) || !(err.status === 404 || TRANSIENT.has(err.status))) throw err;
+        // A call that hung while the turn still has time left = the model is too slow right now.
+        const slow = isTimeout(err) && deadline - Date.now() > 3_000;
+        const status = err instanceof ApiError ? err.status : null;
+        if (!(slow || status === 404 || (status !== null && TRANSIENT.has(status)))) throw err;
         const fallback = await pickAvailableModel(model);
         if (!fallback) throw err;
-        if (err.status === 404) {
+        if (status === 404) {
           // Model ids change over time: this one doesn't exist for the key, so stop using it.
           console.warn(`[gemini] model "${model}" is not available for this API key; using "${fallback}". Set GEMINI_MODEL to choose explicitly.`);
           resolvedModel = fallback;
         } else {
           // Busy or failing right now: switch at once and give it a few minutes before trying again.
-          console.warn(`[gemini] model "${model}" returned ${err.status} (busy or failing); using "${fallback}" for the next ${COOLDOWN_MS / 60_000} minutes.`);
+          const why = slow ? `took longer than ${callTimeoutMs() / 1000} s` : `returned ${status} (busy or failing)`;
+          console.warn(`[gemini] model "${model}" ${why}; using "${fallback}" for the next ${COOLDOWN_MS / 60_000} minutes.`);
           coolingDown.set(model, Date.now() + COOLDOWN_MS);
         }
         model = fallback;
